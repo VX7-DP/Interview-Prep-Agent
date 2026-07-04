@@ -27,6 +27,15 @@ from dotenv import load_dotenv
 from guardrails import check_input
 from memory import create_profile, load_profile, profile_summary, save_profile
 
+# Force UTF-8 on stdout/stderr so status output (which uses box-drawing and
+# em-dash characters) doesn't crash on legacy Windows consoles (cp1252).
+# reconfigure() exists on Python 3.7+; guarded in case the stream lacks it.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 load_dotenv()  # reads GEMINI_API_KEY from .env before importing agent
 
 
@@ -148,10 +157,10 @@ def main() -> None:
     # ── Step 3: Guardrails ───────────────────────────────────────────────────
     result = check_input(posting_text)
     if not result:
-        print(f"\n🚫 Input rejected: {result.reason}\n", file=sys.stderr)
+        print(f"\n[REJECTED] Input rejected: {result.reason}\n", file=sys.stderr)
         sys.exit(1)
 
-    print(f"\n✓ Guardrail passed. Running agent with {args.days}-day prep schedule…\n")
+    print(f"\n[OK] Guardrail passed. Running agent with {args.days}-day prep schedule...\n")
 
     # ── Step 4: Run agent ────────────────────────────────────────────────────
     if not os.getenv("GEMINI_API_KEY"):

@@ -45,19 +45,33 @@ JOB_SIGNALS = [
 
 # Prompt-injection patterns — attacker embeds these inside a posting to hijack
 # the agent's instructions. We detect and reject rather than silently pass.
+#
+# These are deliberately NARROW: they match agent-directed imperative phrasing
+# ("ignore your instructions", "reveal your system prompt") but NOT benign
+# posting language that happens to share vocabulary ("a new role", "act as a
+# point of contact", "our new goal"). Over-broad patterns caused false
+# rejections of legitimate postings, so each pattern below requires the
+# instruction-hijacking structure, not just a keyword.
 INJECTION_PATTERNS = [
-    r"ignore (all |previous |prior |your )(instructions?|prompts?|context|rules?)",
-    r"disregard (all |previous |your )?(instructions?|rules?|context)",
-    r"forget (everything|all|your|prior|previous)",
-    r"new (instructions?|task|objective|goal|role)[\s:]+",
+    # "ignore/disregard [your/all/previous] instructions/rules/prompt"
+    r"ignore (all |the |your |previous |prior )*(instructions?|prompts?|context|rules?)",
+    r"disregard (all |the |your |previous |prior )*(instructions?|rules?|context|prompts?)",
+    # "forget your/all previous instructions/rules" — requires the instruction object
+    r"forget (all |your |the )*(previous |prior )*(instructions?|rules?|context|prompts?)",
+    # "your new instructions are:" / "here are your new instructions:"
+    r"(here are |these are |follow )?(your )?new instructions?( (are|is))?\s*[:\-]",
+    # Direct references to the system prompt / secrets
     r"system\s*prompt",
-    r"reveal (your|the) (system prompt|instructions?|context|secret)",
-    r"print (your|the) (system prompt|instructions?)",
-    r"act as (a |an )?(different|new|another|evil|unfiltered)",
-    r"you are now",
+    r"reveal (your|the) (system prompt|instructions?|context|secret|api key)",
+    r"print (your|the) (system prompt|instructions?|context)",
+    r"(show|tell) me (your|the) (system prompt|instructions?|api key|secret)",
+    # "act as an unfiltered/unrestricted/different AI/assistant"
+    r"act as (a |an )?(different|unfiltered|unrestricted|evil|jailbroken|dan) ",
+    # "you are now a <persona>" — the persona-swap jailbreak
+    r"you are now (a |an )\w+",
     r"jailbreak",
-    r"pretend (you are|to be|that)",
-    r"override (your|all|previous) (instructions?|rules?|context)",
+    # "override your/all/previous instructions/rules"
+    r"override (your|all|the|previous) (instructions?|rules?|context|prompts?)",
 ]
 
 # Minimum document length (characters) for a plausible job posting.

@@ -109,8 +109,8 @@ On **first run**, you'll be prompted for your background (role, stack, years of 
 
 ```bash
 pytest tests/ -v
-# 4 offline tests pass immediately (no API key needed)
-# 3 live tests are skipped unless GEMINI_API_KEY is set
+# 11 offline tests pass immediately (no API key needed)
+# 1 live end-to-end test is skipped unless GEMINI_API_KEY is set
 ```
 
 ---

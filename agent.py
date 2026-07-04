@@ -62,7 +62,95 @@ def log_tool_call(tool_name: str, args_preview: str = "") -> None:
         f.write(entry)
 
 
+def _before_tool_logger(tool, args, tool_context):
+    """
+    ADK before_tool_callback — fires before EVERY tool the agent invokes,
+    including the MCP filesystem tools and the company-research AgentTool that
+    the plain function-tool logging can't reach on its own.
+
+    Signature required by ADK: (tool, args, context) -> Optional[dict].
+    Returning None lets the tool run normally; we only observe, never mutate.
+    This is what makes the plan's "the MCP tool call appears in agent.log" true.
+    """
+    tool_name = getattr(tool, "name", type(tool).__name__)
+    try:
+        args_preview = json.dumps(args, default=str)
+    except (TypeError, ValueError):
+        args_preview = str(args)
+    log_tool_call(tool_name, args_preview)
+    return None  # do not override the tool's normal execution
+
+
 # ── Function tools (concept 1) ───────────────────────────────────────────────
+
+# Section headers that introduce required vs. preferred skills. Used to bucket
+# bullet points into must_have vs. nice_to_have during extraction.
+_MUST_HAVE_HEADERS = re.compile(
+    r"(requirements?|qualifications?|must[- ]have|required skills|what you.?ll need|"
+    r"what we.?re looking for|minimum qualifications?)",
+    re.IGNORECASE,
+)
+_NICE_HEADERS = re.compile(
+    r"(nice[- ]to[- ]have|preferred|bonus|plus(es)?|good to have|"
+    r"desired|preferred qualifications?)",
+    re.IGNORECASE,
+)
+# Section boundaries — a new top-level section ends the current skill bucket.
+_OTHER_HEADERS = re.compile(
+    r"(responsibilities|about (us|the|this)|what you.?ll do|benefits|"
+    r"compensation|salary|perks|why join|our team|how to apply|equal opportunity)",
+    re.IGNORECASE,
+)
+# Technology / skill catalogue. Each entry maps one or more lowercase search
+# terms (matched as whole words inside the posting) to a canonical display name.
+# Whole-word matching (\b…\b) avoids noise like matching "r" inside "product".
+_SKILL_CATALOGUE = {
+    "Python": ["python"], "Java": ["java"], "JavaScript": ["javascript"],
+    "TypeScript": ["typescript"], "Go": ["go", "golang"], "Rust": ["rust"],
+    "C++": ["c\\+\\+"], "C#": ["c#"], "Ruby": ["ruby"], "PHP": ["php"],
+    "Scala": ["scala"], "Kotlin": ["kotlin"], "Swift": ["swift"],
+    "SQL": ["sql"], "NoSQL": ["nosql"],
+    "React": ["react"], "Angular": ["angular"], "Vue": ["vue"],
+    "Node.js": ["node", "node.js", "nodejs"], "Django": ["django"],
+    "Flask": ["flask"], "FastAPI": ["fastapi"], "Spring": ["spring"],
+    "Rails": ["rails"], ".NET": ["\\.net"], "GraphQL": ["graphql"],
+    "REST": ["rest"], "gRPC": ["grpc"],
+    "PostgreSQL": ["postgresql", "postgres"], "MySQL": ["mysql"],
+    "MongoDB": ["mongodb"], "Redis": ["redis"], "Cassandra": ["cassandra"],
+    "DynamoDB": ["dynamodb"], "Elasticsearch": ["elasticsearch"],
+    "Kafka": ["kafka"], "Kinesis": ["kinesis"], "RabbitMQ": ["rabbitmq"],
+    "Spark": ["spark"], "Hadoop": ["hadoop"], "Snowflake": ["snowflake"],
+    "Databricks": ["databricks"], "Airflow": ["airflow"],
+    "AWS": ["aws"], "Azure": ["azure"], "GCP": ["gcp", "google cloud"],
+    "Kubernetes": ["kubernetes", "k8s"], "Docker": ["docker"],
+    "Terraform": ["terraform"], "Helm": ["helm"], "Jenkins": ["jenkins"],
+    "CI/CD": ["ci/cd", "ci / cd"], "Linux": ["linux"],
+    "Machine Learning": ["machine learning"], "Deep Learning": ["deep learning"],
+    "PyTorch": ["pytorch"], "TensorFlow": ["tensorflow"], "NLP": ["nlp"],
+    "Distributed Systems": ["distributed systems"], "Microservices": ["microservices"],
+    "System Design": ["system design"], "Data Structures": ["data structures"],
+    "Algorithms": ["algorithms"], "Agile": ["agile"], "Scrum": ["scrum"],
+}
+
+
+def _extract_skills(text: str) -> list:
+    """
+    Return the ordered, de-duplicated canonical skill names that appear in *text*.
+
+    Matching is whole-word and case-insensitive so short terms (Go, SQL, R) don't
+    match substrings inside unrelated words. Display names come from the catalogue,
+    giving clean, consistently-cased output for the LLM to build on.
+    """
+    lowered = text.lower()
+    found = []
+    for display_name, terms in _SKILL_CATALOGUE.items():
+        for term in terms:
+            # \b word boundaries; term may itself be a regex fragment (e.g. c\+\+).
+            if re.search(rf"(?<![\w]){term}(?![\w])", lowered):
+                found.append(display_name)
+                break  # one match is enough; move to next skill
+    return found
+
 
 def extract_requirements(posting_text: str) -> dict:
     """
@@ -71,19 +159,56 @@ def extract_requirements(posting_text: str) -> dict:
     The ADK passes tool return values back into the model as context, so returning
     a clean JSON-serialisable dict here lets the LLM see a crisp, unambiguous
     summary rather than raw posting prose — reducing hallucination in downstream steps.
+    The LLM still refines these fields (e.g. cleaning up the role title), but the tool
+    does the real structural work so it is a meaningful tool, not a stub.
 
     Fields:
-        role            – job title inferred from the posting
-        company         – company name if mentioned, else "Unknown"
-        must_have_skills – list of required/must-have skills
-        nice_to_have    – list of preferred/bonus skills
-        seniority       – "junior" | "mid" | "senior" | "staff" | "lead" | "unknown"
+        role            – job title inferred from the first substantive line
+        company         – company name if mentioned (via "at X" / "X |" header), else "Unknown"
+        must_have_skills – skills found under requirements/must-have sections
+        nice_to_have    – skills found under nice-to-have/preferred sections
+        seniority       – "junior" | "mid" | "senior" | "staff" | "unknown"
     """
     log_tool_call("extract_requirements", posting_text[:80])
 
-    # Seniority heuristics — order matters: check staff/principal before senior.
-    seniority = "unknown"
+    lines = [ln.strip() for ln in posting_text.splitlines() if ln.strip()]
     lowered = posting_text.lower()
+
+    # ── Role: first non-empty line is almost always the job title ──
+    role = lines[0] if lines else "Unknown"
+    # Strip trailing " | Company | Remote" style decorations from the title.
+    role = re.split(r"\s[|\-–—]\s", role)[0].strip() or "Unknown"
+
+    # ── Company: "at <Company>", or the first non-location segment of a
+    #    pipe-delimited header line (e.g. "Acme Corp | Remote | Full-time"). ──
+    _LOCATION_OR_TYPE = re.compile(
+        r"(remote|hybrid|on.?site|full.?time|part.?time|contract|freelance)",
+        re.IGNORECASE)
+    company = "Unknown"
+    at_match = re.search(r"\bat\s+([A-Z][A-Za-z0-9&.\- ]{1,40})", posting_text)
+    if at_match:
+        company = at_match.group(1).strip().rstrip(".")
+    else:
+        # Scan the first few header lines. Only pipe-delimited lines carry a
+        # company (e.g. "Acme Corp | Remote | Full-time"); the company is the
+        # first segment that isn't the role, a location/type token, or a
+        # section header (a segment ending in ":" like "Requirements:").
+        for ln in lines[:3]:
+            if "|" not in ln:
+                continue
+            parts = [p.strip() for p in re.split(r"\s[|]\s", ln) if p.strip()]
+            for cand in parts:
+                if cand == role or cand.endswith(":"):
+                    continue
+                if _LOCATION_OR_TYPE.search(cand):
+                    continue  # skip "Remote", "Full-time", "NY", etc.
+                company = cand
+                break
+            if company != "Unknown":
+                break
+
+    # ── Seniority heuristics — check staff/principal before senior ──
+    seniority = "unknown"
     for level in ["staff", "principal", "director", "vp ", "head of"]:
         if level in lowered:
             seniority = "staff"
@@ -101,15 +226,37 @@ def extract_requirements(posting_text: str) -> dict:
     if seniority == "unknown":
         seniority = "mid"
 
-    # Return a sentinel dict; the LLM agent fills in the real values via its
-    # instruction to "call extract_requirements and then parse the posting".
-    # The tool itself does lightweight structural extraction; deep NLP happens
-    # inside the LLM during its reasoning about the posting_text argument.
+    # ── Bucket skills by walking the posting section-by-section ──
+    # We track which section we're in; bullets inherit the current bucket.
+    must_text, nice_text = [], []
+    bucket = None  # None | "must" | "nice"
+    for ln in lines:
+        if _NICE_HEADERS.search(ln):
+            bucket = "nice"
+            nice_text.append(ln)
+        elif _MUST_HAVE_HEADERS.search(ln):
+            bucket = "must"
+            must_text.append(ln)
+        elif _OTHER_HEADERS.search(ln):
+            bucket = None
+        elif bucket == "must":
+            must_text.append(ln)
+        elif bucket == "nice":
+            nice_text.append(ln)
+
+    must_have_skills = _extract_skills("\n".join(must_text))
+    nice_to_have = _extract_skills("\n".join(nice_text))
+
+    # Fallback: if section parsing found nothing (unstructured posting),
+    # scan the whole document so we never return an empty skill list.
+    if not must_have_skills and not nice_to_have:
+        must_have_skills = _extract_skills(posting_text)
+
     return {
-        "role": "to be extracted by agent",
-        "company": "to be extracted by agent",
-        "must_have_skills": [],
-        "nice_to_have": [],
+        "role": role,
+        "company": company,
+        "must_have_skills": must_have_skills,
+        "nice_to_have": nice_to_have,
         "seniority": seniority,
         "raw_posting_length": len(posting_text),
     }
@@ -293,4 +440,6 @@ def create_agent(user_profile_summary: str, days_to_prep: int = 7) -> Agent:
             search_agent_tool,
             mcp_toolset,
         ],
+        # Observability: log every tool call (incl. MCP + AgentTool) to agent.log.
+        before_tool_callback=_before_tool_logger,
     )

@@ -175,67 +175,73 @@ def test_profile_persists(tmp_path, monkeypatch):
     assert loaded["target_roles"] == ["ML Engineer"]
 
 
-# ── T5–T7: Live tests (require GEMINI_API_KEY) ──────────────────────────────
+# ── T4b: Guardrail does not false-reject legitimate postings (F1 regression) ─
 
-LIVE = pytest.mark.skipif(
-    not os.getenv("GEMINI_API_KEY"),
-    reason="GEMINI_API_KEY not set — skipping live API tests",
-)
+# Phrases drawn from real postings that an over-broad injection filter used to
+# reject. Each is embedded in an otherwise-valid posting; all must be ACCEPTED.
+LEGIT_PHRASES = [
+    "About this new role: you will join our platform team.",
+    "You will act as a new point of contact for enterprise clients.",
+    "Our new goal: ship the v2 platform this year.",
+    "Take on a new task each sprint and own it end to end.",
+    "Define a new objective for the quarter with your manager.",
+]
 
 
-@LIVE
-def test_extraction_has_required_keys():
+@pytest.mark.parametrize("phrase", LEGIT_PHRASES)
+def test_legit_posting_not_flagged_as_injection(phrase):
     """
-    The agent's extract_requirements tool must return a dict containing all
-    five schema keys. Missing keys break the downstream plan generation step.
+    Regression for the guardrail over-blocking bug: postings that merely contain
+    benign words like 'new role' / 'act as' must NOT be flagged as injection.
+    Each phrase is wrapped in a full, valid posting so only the phrase is at issue.
+    """
+    posting = (
+        "Software Engineer\n"
+        "BetaCorp | Remote | Full-time\n\n"
+        "Responsibilities:\n"
+        f"- {phrase}\n"
+        "- Collaborate cross-functionally with product teams.\n\n"
+        "Requirements:\n"
+        "- 3+ years of experience with Python and PostgreSQL.\n"
+        "- Proficiency in AWS.\n\n"
+        "We are an equal opportunity employer."
+    )
+    result = check_input(posting)
+    assert result.allowed, (
+        f"Legit posting was wrongly rejected for phrase {phrase!r}: {result.reason}"
+    )
+
+
+# ── T5: Extraction returns the 5-key schema with real values (offline) ──────
+
+def test_extraction_schema_and_values():
+    """
+    extract_requirements must return all five schema keys AND real extracted
+    values (not placeholders). This is a pure-Python tool — no API key needed —
+    so the test runs offline and guards the downstream plan-generation contract.
     """
     from agent import extract_requirements
 
     result = extract_requirements(SAMPLE_POSTING)
+
     required_keys = {"role", "company", "must_have_skills", "nice_to_have", "seniority"}
     missing = required_keys - set(result.keys())
     assert not missing, f"Extraction result missing keys: {missing}"
 
-
-@LIVE
-def test_plan_has_ten_technical_questions(tmp_path):
-    """
-    End-to-end run: the generated plan must contain at least 10 technical questions.
-    We count numbered list items under a 'Technical' header as a proxy.
-    """
-    import asyncio
-    from agent import create_agent, log_tool_call
-    from memory import profile_summary
-
-    test_profile = {
-        "current_role": "Software Engineer",
-        "years_exp": 3,
-        "tech_stack": ["Python", "FastAPI"],
-        "target_roles": ["Senior SWE"],
-        "notes": "",
-    }
-    summary = profile_summary(test_profile)
-
-    # A minimal live run — we don't need MCP saving for this assertion,
-    # so we create the agent and call generate_prep_plan directly.
-    plan_struct = __import__("agent").generate_prep_plan(
-        role="Senior Software Engineer",
-        company="Acme Corp",
-        must_have_skills=["Python", "Go", "Distributed Systems", "AWS"],
-        nice_to_have=["Kubernetes", "Kafka"],
-        seniority="senior",
-        user_profile_summary=summary,
-        days_to_prep=7,
-    )
-
-    # Verify the structure signals 10 technical questions will be generated.
-    assert "technical_questions_10" in plan_struct["sections_to_generate"]
+    # Real extraction: the sample posting requires Python and lists Kubernetes
+    # under nice-to-have; seniority is 'senior'.
+    assert "Python" in result["must_have_skills"], result["must_have_skills"]
+    assert "Kubernetes" in result["nice_to_have"], result["nice_to_have"]
+    assert result["seniority"] == "senior"
+    assert result["role"] and result["role"] != "Unknown"
 
 
-@LIVE
+# ── T6: agent.log grows after a tool call (offline observability check) ─────
+
 def test_agent_log_grows(tmp_path, monkeypatch):
     """
-    After a tool call, agent.log must be non-empty. Validates observability.
+    After a tool call, agent.log must contain the entry. Validates observability.
+    Pure-Python (log_tool_call writes a file) — runs offline.
     """
     import agent as agent_module
 
@@ -247,3 +253,66 @@ def test_agent_log_grows(tmp_path, monkeypatch):
     content = log_path.read_text(encoding="utf-8")
     assert "test_tool" in content
     assert "test_args" in content
+
+
+# ── T7: Live end-to-end — plan has ≥10 technical questions (requires key) ────
+
+LIVE = pytest.mark.skipif(
+    not os.getenv("GEMINI_API_KEY"),
+    reason="GEMINI_API_KEY not set — skipping live API test",
+)
+
+
+@LIVE
+def test_plan_has_ten_technical_questions():
+    """
+    Full end-to-end live run: feed the sample posting through the real ADK agent
+    and assert the generated plan contains at least 10 technical questions.
+
+    This is the scripted H3 checkpoint from the capstone plan. It only runs when
+    GEMINI_API_KEY is set; otherwise it skips so the offline suite stays green.
+    """
+    import asyncio
+
+    from google.adk.runners import InMemoryRunner
+    from google.genai import types as genai_types
+
+    from agent import create_agent
+    from memory import profile_summary
+
+    test_profile = {
+        "current_role": "Software Engineer",
+        "years_exp": 3,
+        "tech_stack": ["Python", "FastAPI"],
+        "target_roles": ["Senior SWE"],
+        "notes": "",
+    }
+
+    async def _run() -> str:
+        agent = create_agent(profile_summary(test_profile), days_to_prep=7)
+        runner = InMemoryRunner(agent=agent, app_name="interview_prep_agent")
+        session = await runner.session_service.create_session(
+            app_name="interview_prep_agent", user_id="test_user"
+        )
+        message = genai_types.Content(
+            role="user",
+            parts=[genai_types.Part(text=f"Here is the job posting:\n\n{SAMPLE_POSTING}")],
+        )
+        full_text = ""
+        async for event in runner.run_async(
+            user_id="test_user", session_id=session.id, new_message=message
+        ):
+            if getattr(event, "content", None):
+                for part in event.content.parts:
+                    if getattr(part, "text", None):
+                        full_text += part.text
+        return full_text
+
+    output = asyncio.run(_run())
+
+    # Count numbered list items (1. … 10. …) as a proxy for questions.
+    numbered = re.findall(r"^\s*\d+[.)]", output, flags=re.MULTILINE)
+    assert len(numbered) >= 10, (
+        f"Expected >=10 numbered items (technical questions), found {len(numbered)}."
+        f"\n--- output ---\n{output[:1000]}"
+    )
