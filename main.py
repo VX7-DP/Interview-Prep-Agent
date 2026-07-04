@@ -20,11 +20,12 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 
 from dotenv import load_dotenv
 
-from guardrails import check_input
+from guardrails import check_input, check_url
 from memory import create_profile, load_profile, profile_summary, save_profile
 
 # Force UTF-8 on stdout/stderr so status output (which uses box-drawing and
@@ -47,6 +48,11 @@ def parse_args() -> argparse.Namespace:
         "--file", "-f",
         metavar="PATH",
         help="Path to a text file containing the job posting (default: interactive paste).",
+    )
+    parser.add_argument(
+        "--url", "-u",
+        metavar="URL",
+        help="URL of a job posting. The agent fetches it via the MCP fetch server.",
     )
     parser.add_argument(
         "--days", "-d",
@@ -78,47 +84,69 @@ def read_posting(file_path: str | None) -> str:
     return "\n".join(lines)
 
 
-async def run_agent(posting_text: str, profile: dict, days: int) -> None:
+def _save_plan(plan_text: str) -> str:
     """
-    Async core: build the ADK agent, run it with InMemoryRunner, and stream output.
+    Save the finished prep plan to output/ as a timestamp-free, slugged markdown
+    file. Done in plain Python (not via MCP) so the artifact is always produced;
+    the MCP server in this project is the `fetch` tool used for URL input.
 
-    InMemoryRunner handles session management and artifact storage in-process —
-    no external database or server required, which aligns with the "personal,
-    locally-run agent" Concierge track pitch.
+    Returns the path written.
+    """
+    from agent import OUTPUT_DIR
+
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # Derive a filename from the company name in the plan's opening line only
+    # (e.g. "...role at Acme Corp."). Restricting to the first line avoids matching
+    # stray tokens deeper in the text like "Lambda@Edge".
+    slug = "prep_plan"
+    first_line = plan_text.strip().splitlines()[0] if plan_text.strip() else ""
+    m = re.search(r"\b(?:at|@)\s+([A-Z][A-Za-z0-9 .&-]{1,40}?)(?:[.,]|\s+role|$)", first_line)
+    if m:
+        slug = "prep_plan_" + re.sub(r"[^A-Za-z0-9]+", "_", m.group(1).strip()).strip("_")
+    path = os.path.join(OUTPUT_DIR, f"{slug}.md")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(plan_text)
+    return path
+
+
+async def run_agent(agent_input: str, profile: dict, days: int) -> None:
+    """
+    Async core: build the ADK agent, run it with InMemoryRunner, stream output,
+    and save the finished plan to output/.
+
+    *agent_input* is the message handed to the agent — either the pasted posting
+    text, or an instruction to fetch a URL (in which case the agent calls the MCP
+    `fetch` tool first). InMemoryRunner handles session/artifact management
+    in-process — no external server — matching the locally-run Concierge pitch.
     """
     # Import here (after load_dotenv) so GEMINI_API_KEY is already in the env
     # when the ADK initializes the Gemini client.
     from google.adk.runners import InMemoryRunner
-    from google.adk.sessions import InMemorySessionService
     from agent import create_agent, log_tool_call
 
     user_summary = profile_summary(profile)
     root_agent = create_agent(user_summary, days_to_prep=days)
 
-    # InMemoryRunner wires together the agent, session service, and artifact
-    # service so we can execute turns without standing up a server.
     runner = InMemoryRunner(
         agent=root_agent,
         app_name="interview_prep_agent",
     )
 
-    session_service = runner.session_service
-    session = await session_service.create_session(
+    session = await runner.session_service.create_session(
         app_name="interview_prep_agent",
         user_id="local_user",
     )
 
     log_tool_call("run_agent", f"session={session.id} days={days}")
 
-    # Build the user turn — pass the posting as the message content.
     from google.genai import types as genai_types
 
     user_message = genai_types.Content(
         role="user",
-        parts=[genai_types.Part(text=f"Here is the job posting:\n\n{posting_text}")],
+        parts=[genai_types.Part(text=agent_input)],
     )
 
-    print("\n── Generating your personalized prep plan ──\n")
+    print("\n── Generating your personalized prep plan ──")
     print("(This may take 30–60 seconds — the agent extracts, researches, and plans.)\n")
 
     # Stream the agent's response event by event.
@@ -128,15 +156,19 @@ async def run_agent(posting_text: str, profile: dict, days: int) -> None:
         session_id=session.id,
         new_message=user_message,
     ):
-        # ADK emits various event types; we print final text responses.
-        if hasattr(event, "content") and event.content:
+        if getattr(event, "content", None):
             for part in event.content.parts:
-                if hasattr(part, "text") and part.text:
+                if getattr(part, "text", None):
                     print(part.text, end="", flush=True)
                     final_response += part.text
 
-    print("\n\n── Done. Check output/ for the saved Markdown plan. ──\n")
     log_tool_call("run_agent_complete", f"response_len={len(final_response)}")
+
+    if final_response.strip():
+        saved = _save_plan(final_response)
+        print(f"\n\n── Done. Plan saved to {saved} ──\n")
+    else:
+        print("\n\n── Done, but the agent returned no text. Check agent.log. ──\n")
 
 
 def main() -> None:
@@ -151,28 +183,40 @@ def main() -> None:
         print(f"\nLoaded profile: {profile.get('current_role', '?')} "
               f"({profile.get('years_exp', '?')} yrs exp)\n")
 
-    # ── Step 2: Read posting ─────────────────────────────────────────────────
-    posting_text = read_posting(args.file)
+    # ── Step 2: Input + guardrails ───────────────────────────────────────────
+    # Two modes:
+    #   URL mode  (--url):  validate the URL (scheme + SSRF), then the AGENT
+    #                       fetches the posting via the MCP `fetch` tool.
+    #   Text mode (default): read pasted/file text, run the job-posting guardrail.
+    if args.url:
+        result = check_url(args.url)
+        if not result:
+            print(f"\n[REJECTED] URL rejected: {result.reason}\n", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n[OK] URL guardrail passed. The agent will fetch: {args.url}\n")
+        agent_input = (
+            f"Fetch this job posting URL and build my interview prep plan: {args.url}"
+        )
+    else:
+        posting_text = read_posting(args.file)
+        result = check_input(posting_text)
+        if not result:
+            print(f"\n[REJECTED] Input rejected: {result.reason}\n", file=sys.stderr)
+            sys.exit(1)
+        print(f"\n[OK] Guardrail passed. Running agent with {args.days}-day prep schedule...\n")
+        agent_input = f"Here is the job posting:\n\n{posting_text}"
 
-    # ── Step 3: Guardrails ───────────────────────────────────────────────────
-    result = check_input(posting_text)
-    if not result:
-        print(f"\n[REJECTED] Input rejected: {result.reason}\n", file=sys.stderr)
-        sys.exit(1)
-
-    print(f"\n[OK] Guardrail passed. Running agent with {args.days}-day prep schedule...\n")
-
-    # ── Step 4: Run agent ────────────────────────────────────────────────────
+    # ── Step 3: Run agent ────────────────────────────────────────────────────
     if not os.getenv("GEMINI_API_KEY"):
         print(
             "ERROR: GEMINI_API_KEY not set.\n"
-            "  1. Copy .env.example → .env\n"
+            "  1. Copy .env.example -> .env\n"
             "  2. Add your key from https://aistudio.google.com/apikey\n",
             file=sys.stderr,
         )
         sys.exit(1)
 
-    asyncio.run(run_agent(posting_text, profile, args.days))
+    asyncio.run(run_agent(agent_input, profile, args.days))
 
 
 if __name__ == "__main__":

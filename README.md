@@ -44,9 +44,10 @@ User provides job posting (paste or file)
    ├── generate_prep_plan()   → plan skeleton for LLM to expand
    │
    └── MCPToolset  ← concept 3 · MCP Server
-       @modelcontextprotocol/server-filesystem (npx)
-       Saves finished plan to output/prep_plan_<company>.md
+       official `fetch` server (mcp-server-fetch, Python, no Node)
+       When given a URL, the agent fetches the posting via MCP
          │
+   main.py saves the finished plan to output/prep_plan_<company>.md
    agent.log  ← every tool call timestamped (observability)
    profile.json  ← loaded/saved across sessions (memory, gitignored)
 ```
@@ -58,8 +59,8 @@ User provides job posting (paste or file)
 | # | Concept | Location |
 |---|---------|----------|
 | 1 | **ADK Agent / multi-agent system** | `agent.py` — `create_agent()`, `search_sub_agent`, `search_agent_tool` |
-| 2 | **Security features** (input guardrail + security tests) | `guardrails.py` — `check_input()` · `tests/test_agent.py` — T2, T3 |
-| 3 | **MCP server** (filesystem, via npx) | `agent.py` — `build_mcp_toolset()` |
+| 2 | **Security features** (input guardrail + URL/SSRF guardrail + security tests) | `guardrails.py` — `check_input()`, `check_url()` · `tests/test_agent.py` |
+| 3 | **MCP server** (official `fetch` server) | `agent.py` — `build_mcp_toolset()` |
 
 ---
 
@@ -67,8 +68,9 @@ User provides job posting (paste or file)
 
 ### Prerequisites
 - Python 3.13
-- Node.js + npx (for the MCP filesystem server)
 - A [Gemini API key](https://aistudio.google.com/apikey) (free tier works)
+
+(No Node.js required — the MCP `fetch` server runs in the same Python venv.)
 
 ### Install
 
@@ -98,10 +100,16 @@ copy .env.example .env           # Windows
 ### Run
 
 ```bash
-python main.py                     # interactive paste mode
-python main.py --file posting.txt  # read from file
-python main.py --days 14           # 14-day prep schedule
+python main.py                          # interactive paste mode
+python main.py --file posting.txt       # read posting from a file
+python main.py --url https://…/job/123  # agent fetches the posting via MCP
+python main.py --days 14                # 14-day prep schedule
 ```
+
+In `--url` mode the URL is first checked by `check_url()` (http/https only, no
+loopback/private hosts — SSRF protection), then the agent calls the MCP `fetch`
+tool to retrieve the posting. In text/file mode the posting runs through
+`check_input()` (job-posting validation + prompt-injection detection).
 
 On **first run**, you'll be prompted for your background (role, stack, years of experience). This is saved to `profile.json` (gitignored). All subsequent runs load it silently.
 
@@ -109,8 +117,9 @@ On **first run**, you'll be prompted for your background (role, stack, years of 
 
 ```bash
 pytest tests/ -v
-# 11 offline tests pass immediately (no API key needed)
-# 1 live end-to-end test is skipped unless GEMINI_API_KEY is set
+# 20 offline tests pass immediately (no API key needed)
+# 1 live end-to-end test runs if GEMINI_API_KEY is set (skips otherwise,
+#   and skips gracefully if the free-tier daily quota is exhausted)
 ```
 
 ---
@@ -153,8 +162,8 @@ Day 1 (Go fundamentals): …
 ## Limitations
 
 - Google Search results vary; company research may be outdated for small companies.
-- The MCP filesystem server requires Node.js/npx; on machines without Node, this step is skipped gracefully.
-- Live agent runs consume Gemini API quota — the free tier (60 req/min) is sufficient for typical use.
+- `--url` mode depends on the target page being fetchable server-side; JavaScript-rendered or bot-blocked postings may not extract cleanly. Pasting the text (`--file`/paste) always works.
+- Live agent runs consume Gemini API quota — the free tier allows **20 requests/day** for `gemini-2.5-flash`, and a full run uses several. Heavy testing can exhaust the daily quota (the live test skips cleanly when it does).
 
 ---
 

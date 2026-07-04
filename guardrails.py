@@ -6,6 +6,10 @@ prompt-injection surface. This module is the mitigation layer:
   1. Reject non-job-posting input (off-topic text like recipes or personal notes).
   2. Detect and flag prompt-injection patterns embedded inside the posting
      so the agent never blindly executes injected instructions.
+  3. Validate user-supplied URLs before the agent fetches them via MCP
+     (check_url): scheme allowlist + private/loopback-host block. Fetching a URL
+     pulls untrusted web content into the agent — the classic prompt-injection and
+     SSRF surface — so we constrain WHAT can be fetched before it ever runs.
 
 The check is intentionally DETERMINISTIC (no LLM calls), making it:
   - Fast (sub-millisecond)
@@ -152,3 +156,69 @@ def check_input(text: str) -> GuardrailResult:
         )
 
     return GuardrailResult(allowed=True, reason="Input accepted as a job description.")
+
+
+# ── URL guardrail (for --url mode, before the agent fetches via MCP) ─────────
+
+from urllib.parse import urlparse
+import ipaddress
+
+# Only these URL schemes may be fetched. Blocks file://, javascript:, data:, etc.
+_ALLOWED_SCHEMES = {"http", "https"}
+
+# Host substrings that indicate a private / loopback / metadata target. Fetching
+# these would be a Server-Side Request Forgery (SSRF) — the agent could be tricked
+# into reading internal services. We reject them outright.
+_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal"}
+
+
+def check_url(url: str) -> GuardrailResult:
+    """
+    Validate a user-supplied URL before the agent fetches it via the MCP `fetch`
+    tool. This is the security boundary for --url mode (concept 2): fetching an
+    arbitrary URL pulls untrusted content into the agent and can be abused for
+    SSRF, so we constrain the target first.
+
+    Rejects when:
+      - the string isn't a parseable http(s) URL,
+      - the scheme isn't http/https (blocks file://, data:, javascript:, etc.),
+      - the host is loopback/localhost, a private/link-local IP, or a known
+        cloud metadata endpoint.
+    """
+    if not url or not url.strip():
+        return GuardrailResult(allowed=False, reason="No URL provided.")
+
+    parsed = urlparse(url.strip())
+
+    if parsed.scheme.lower() not in _ALLOWED_SCHEMES:
+        return GuardrailResult(
+            allowed=False,
+            reason=(
+                f"URL scheme '{parsed.scheme or '(none)'}' is not allowed. "
+                "Only http:// and https:// URLs can be fetched."
+            ),
+        )
+
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return GuardrailResult(allowed=False, reason="URL has no host.")
+
+    if host in _BLOCKED_HOSTS:
+        return GuardrailResult(
+            allowed=False,
+            reason=f"Refusing to fetch internal/loopback host '{host}' (SSRF protection).",
+        )
+
+    # Block private, loopback, and link-local IP addresses (e.g. 10.x, 192.168.x,
+    # 169.254.x). Hostnames that aren't IPs fall through and are allowed.
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            return GuardrailResult(
+                allowed=False,
+                reason=f"Refusing to fetch private/reserved IP '{host}' (SSRF protection).",
+            )
+    except ValueError:
+        pass  # not a literal IP — a normal hostname, allowed
+
+    return GuardrailResult(allowed=True, reason="URL accepted for fetching.")

@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pytest
 
-from guardrails import check_input
+from guardrails import check_input, check_url
 from memory import load_profile, save_profile
 
 # ── Fixtures ────────────────────────────────────────────────────────────────
@@ -175,6 +175,37 @@ def test_profile_persists(tmp_path, monkeypatch):
     assert loaded["target_roles"] == ["ML Engineer"]
 
 
+# ── T3b: URL guardrail — scheme allowlist + SSRF protection (concept 2) ─────
+
+@pytest.mark.parametrize("url", [
+    "https://careers.example.com/jobs/senior-swe",
+    "http://jobs.acme.io/posting/123",
+])
+def test_check_url_accepts_public_http(url):
+    """Legitimate public http(s) job-posting URLs must be accepted for fetching."""
+    result = check_url(url)
+    assert result.allowed, f"Public URL wrongly rejected: {result.reason}"
+
+
+@pytest.mark.parametrize("url", [
+    "file:///etc/passwd",                       # non-http scheme
+    "javascript:alert(1)",                       # script scheme
+    "http://localhost:8080/admin",               # loopback host
+    "http://127.0.0.1/secret",                   # loopback IP
+    "http://169.254.169.254/latest/meta-data/",  # cloud metadata (SSRF classic)
+    "http://192.168.1.1/internal",               # private IP
+    "not-a-url",                                 # unparseable
+])
+def test_check_url_blocks_dangerous(url):
+    """
+    Non-http schemes, loopback/private hosts, and cloud-metadata endpoints must be
+    rejected before the agent's MCP fetch tool ever sees them (SSRF protection).
+    """
+    result = check_url(url)
+    assert not result.allowed, f"Dangerous URL was wrongly accepted: {url}"
+    assert result.reason
+
+
 # ── T4b: Guardrail does not false-reject legitimate postings (F1 regression) ─
 
 # Phrases drawn from real postings that an over-broad injection filter used to
@@ -308,7 +339,16 @@ def test_plan_has_ten_technical_questions():
                         full_text += part.text
         return full_text
 
-    output = asyncio.run(_run())
+    try:
+        output = asyncio.run(_run())
+    except Exception as exc:  # noqa: BLE001 — inspect message for quota errors
+        msg = str(exc)
+        # A 429 / RESOURCE_EXHAUSTED means the Gemini free-tier daily quota is spent
+        # (20 requests/day for gemini-2.5-flash). That is an environment limit, not a
+        # defect in the code under test, so we skip rather than fail.
+        if "429" in msg or "RESOURCE_EXHAUSTED" in msg or "quota" in msg.lower():
+            pytest.skip(f"Gemini API quota exhausted — skipping live run: {msg[:120]}")
+        raise
 
     # Count numbered list items (1. … 10. …) as a proxy for questions.
     numbered = re.findall(r"^\s*\d+[.)]", output, flags=re.MULTILINE)

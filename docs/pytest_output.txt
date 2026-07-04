@@ -1,0 +1,25 @@
+============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0 -- C:\Users\sumit\Kaggle\Interview-Prep-Agent\.venv\Scripts\python.exe
+collecting ... collected 21 items
+tests/test_agent.py::test_valid_posting_passes_guardrail PASSED          [  4%]
+tests/test_agent.py::test_cake_recipe_rejected PASSED                    [  9%]
+tests/test_agent.py::test_injection_posting_rejected PASSED              [ 14%]
+tests/test_agent.py::test_profile_persists PASSED                        [ 19%]
+tests/test_agent.py::test_check_url_accepts_public_http[https://careers.example.com/jobs/senior-swe] PASSED [ 23%]
+tests/test_agent.py::test_check_url_accepts_public_http[http://jobs.acme.io/posting/123] PASSED [ 28%]
+tests/test_agent.py::test_check_url_blocks_dangerous[file:///etc/passwd] PASSED [ 33%]
+tests/test_agent.py::test_check_url_blocks_dangerous[javascript:alert(1)] PASSED [ 38%]
+tests/test_agent.py::test_check_url_blocks_dangerous[http://localhost:8080/admin] PASSED [ 42%]
+tests/test_agent.py::test_check_url_blocks_dangerous[http://127.0.0.1/secret] PASSED [ 47%]
+tests/test_agent.py::test_check_url_blocks_dangerous[http://169.254.169.254/latest/meta-data/] PASSED [ 52%]
+tests/test_agent.py::test_check_url_blocks_dangerous[http://192.168.1.1/internal] PASSED [ 57%]
+tests/test_agent.py::test_check_url_blocks_dangerous[not-a-url] PASSED   [ 61%]
+tests/test_agent.py::test_legit_posting_not_flagged_as_injection[About this new role: you will join our platform team.] PASSED [ 66%]
+tests/test_agent.py::test_legit_posting_not_flagged_as_injection[You will act as a new point of contact for enterprise clients.] PASSED [ 71%]
+tests/test_agent.py::test_legit_posting_not_flagged_as_injection[Our new goal: ship the v2 platform this year.] PASSED [ 76%]
+tests/test_agent.py::test_legit_posting_not_flagged_as_injection[Take on a new task each sprint and own it end to end.] PASSED [ 80%]
+tests/test_agent.py::test_legit_posting_not_flagged_as_injection[Define a new objective for the quarter with your manager.] PASSED [ 85%]
+tests/test_agent.py::test_extraction_schema_and_values PASSED            [ 90%]
+tests/test_agent.py::test_agent_log_grows PASSED                         [ 95%]
+tests/test_agent.py::test_plan_has_ten_technical_questions SKIPPED (...) [100%]
+================== 20 passed, 1 skipped, 5 warnings in 4.80s ==================

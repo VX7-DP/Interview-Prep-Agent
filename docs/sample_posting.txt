@@ -1,0 +1,27 @@
+Senior Software Engineer — Backend Platform
+Acme Corp | Remote | Full-time
+
+About the role:
+You will design and implement scalable backend services that power Acme's
+core data platform, serving millions of requests per day. This is a high-impact
+role on a small, senior team.
+
+Responsibilities:
+- Design and own microservices in Python and Go
+- Collaborate cross-functionally with product and data engineering teams
+- Lead technical design reviews and mentor junior engineers
+- Drive improvements to our CI/CD pipeline and deployment workflows
+
+Requirements (must-have):
+- 5+ years of professional software engineering experience
+- Proficiency in Python and at least one of Go, Java, or Rust
+- Strong knowledge of distributed systems and databases (PostgreSQL, Redis)
+- Experience with AWS (EC2, ECS, S3, RDS)
+- Solid understanding of system design and scalability principles
+
+Nice to have:
+- Experience with Kubernetes and Helm charts
+- Familiarity with data streaming (Kafka, Kinesis)
+- Prior work in a high-growth startup environment
+
+We are an equal opportunity employer. Competitive salary, equity, and benefits.
