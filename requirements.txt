@@ -1,0 +1,4 @@
+google-adk==2.3.0
+mcp==1.28.1
+pytest==9.1.1
+python-dotenv==1.2.2
