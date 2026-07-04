@@ -117,7 +117,7 @@ async def run_agent(agent_input: str, profile: dict, days: int) -> None:
     *agent_input* is the message handed to the agent — either the pasted posting
     text, or an instruction to fetch a URL (in which case the agent calls the MCP
     `fetch` tool first). InMemoryRunner handles session/artifact management
-    in-process — no external server — matching the locally-run Concierge pitch.
+    in-process — no external server — keeping everything locally run.
     """
     # Import here (after load_dotenv) so GEMINI_API_KEY is already in the env
     # when the ADK initializes the Gemini client.

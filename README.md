@@ -1,6 +1,6 @@
 # Interview Prep Agent
 
-**Kaggle Capstone — Concierge Agents track**
+**Kaggle Capstone**
 
 > Paste a job description. Get a personalized interview prep plan — skill-gap analysis, 10 technical questions, 5 behavioral questions, and a day-by-day study schedule — tailored to YOUR background, stored only on YOUR machine.
 
@@ -22,7 +22,7 @@ An **ADK-powered multi-agent system** that:
 3. Computes a skill-gap analysis against your locally-stored career profile
 4. Generates a complete, personalized prep plan and saves it as a Markdown file via MCP
 
-Your profile (`profile.json`) never leaves your machine — the Concierge track's privacy guarantee.
+Your profile (`profile.json`) never leaves your machine — personal data stays local by design.
 
 ---
 
@@ -169,6 +169,6 @@ Day 1 (Go fundamentals): …
 
 ## How It Was Built
 
-Vibe-coded with [Claude Code](https://claude.ai/code). Every prompt is logged in [`prompts/vibe_log.md`](prompts/vibe_log.md) for full transparency.
+Vibe-coded with an AI coding assistant. Every prompt is logged in [`prompts/vibe_log.md`](prompts/vibe_log.md) for full transparency.
 
 ADK imports and MCP wiring were verified against [adk.dev](https://adk.dev) live docs during each session — the docs moved from `google.github.io/adk-docs` to `adk.dev` mid-build, which the vibe log captures.

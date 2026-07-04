@@ -143,7 +143,7 @@ def test_injection_posting_rejected():
 def test_profile_persists(tmp_path, monkeypatch):
     """
     A profile created in one process must be loadable in a subsequent process.
-    This validates the Concierge track's core memory feature — the agent
+    This validates the agent's core memory feature — the agent
     personalizes on run 2 because it remembers what run 1 collected.
 
     We monkeypatch the profile path so tests don't touch the real profile.json.

@@ -9,3 +9,4 @@ output/
 *.egg-info/
 dist/
 build/
+capstone-final-plan.md

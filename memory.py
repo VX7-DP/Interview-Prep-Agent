@@ -1,8 +1,8 @@
 """
-memory.py — Persistent user profile for the Concierge Agents track.
+memory.py — Persistent user profile for the interview prep agent.
 
 The profile is stored in profile.json, which is:
-  - Gitignored → personal data never leaves the user's machine (track's privacy pitch).
+  - Gitignored → personal data never leaves the user's machine (privacy by design).
   - Plain JSON, no database → zero infrastructure required.
   - Loaded silently on subsequent runs so the prep plan personalizes against
     the user's actual background without re-prompting.
