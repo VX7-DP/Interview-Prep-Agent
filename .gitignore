@@ -10,3 +10,6 @@ output/
 dist/
 build/
 capstone-final-plan.md
+Progress.md
+CLAUDE.md
+prompts/
